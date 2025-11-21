@@ -11,7 +11,7 @@ jobs:
       pull-requests: write
     
     steps:
-    - name: Checkout repository
+    - name: Checkout UAT branch
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
@@ -22,17 +22,22 @@ jobs:
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-    - name: Generate diff report
+    - name: Fetch all branches
       run: |
-        git fetch origin main
-        # Create diff report
-        git diff origin/main...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null > diff_report.patch || echo "No differences found" > diff_report.patch
+        git fetch origin
+        echo "Available remote branches:"
+        git branch -r
+
+    - name: Generate diff report against prod
+      run: |
+        # Create diff report between prod and current uat branch
+        git diff origin/prod...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null > diff_report.patch || echo "No differences found" > diff_report.patch
         echo "DIFF REPORT: UAT → Production" > diff_summary.md
         echo "=============================" >> diff_summary.md
-        git diff --stat origin/main...HEAD 2>/dev/null >> diff_summary.md || echo "No statistical differences" >> diff_summary.md
+        git diff --stat origin/prod...HEAD 2>/dev/null >> diff_summary.md || echo "No statistical differences" >> diff_summary.md
 
         # Get commit history for release notes
-        git log origin/main..HEAD --oneline --no-merges 2>/dev/null > release_notes.md || echo "No new commits" > release_notes.md
+        git log origin/prod..HEAD --oneline --no-merges 2>/dev/null > release_notes.md || echo "No new commits" > release_notes.md
 
     - name: Create Pull Request to Production
       id: create-pr
@@ -40,19 +45,12 @@ jobs:
       with:
         script: |
           try {
-            // Read release notes
-            const fs = require('fs');
-            let releaseNotes = 'No release notes available';
-            if (fs.existsSync('release_notes.md')) {
-              releaseNotes = fs.readFileSync('release_notes.md', 'utf8');
-            }
-            
-            // Check if PR already exists
+            // Check if PR already exists from uat to prod
             const existingPRs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
               head: 'uat',
-              base: 'main',
+              base: 'prod',
               state: 'open'
             });
             
@@ -62,14 +60,21 @@ jobs:
               return { pr_number: existingPRs.data[0].number, exists: true };
             }
             
-            // Create new PR
+            // Read release notes
+            const fs = require('fs');
+            let releaseNotes = 'No release notes available';
+            if (fs.existsSync('release_notes.md')) {
+              releaseNotes = fs.readFileSync('release_notes.md', 'utf8');
+            }
+            
+            // Create new PR from uat to prod
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `🚀 Production Release - ${new Date().toISOString().split('T')[0]}`,
               head: 'uat',
-              base: 'main',
-              body: `## Production Deployment from uat\n\n` +
+              base: 'prod',
+              body: `## Production Deployment from UAT\n\n` +
                     `### 📋 Release Notes\n\`\`\`\n${releaseNotes}\n\`\`\`\n\n` +
                     `**⚠️ Production Deployment - Requires Approval**`,
               draft: false
