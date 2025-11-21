@@ -71,7 +71,7 @@ jobs:
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Production Release - ${new Date().toISOString().split('T')[0]}`,
+              title: `Production Deployment - ${new Date().toISOString().split('T')[0]}`,
               head: 'uat',
               base: 'prod',
               body: `## Production Deployment from UAT\n\n` +
