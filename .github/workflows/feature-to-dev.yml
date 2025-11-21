@@ -1,4 +1,4 @@
-name: Feature to Development Deployment
+name: Feature branch to Dev
 
 on:
   workflow_dispatch: # Manual trigger only
