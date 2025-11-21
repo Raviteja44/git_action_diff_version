@@ -1,4 +1,4 @@
-name: UAT to Production Deployment
+name: UAT to Prod 
 
 on:
   workflow_dispatch: # Manual trigger only
