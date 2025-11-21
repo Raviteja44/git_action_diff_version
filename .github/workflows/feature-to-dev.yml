@@ -1,7 +1,7 @@
 name: Feature to Development Deployment
 
 on:
-  workflow_dispatch: # Manual trigger only
+  workflow_dispatch:
     inputs:
       feature_branch:
         description: 'Feature branch to deploy'
@@ -9,7 +9,7 @@ on:
         type: string
         default: 'feature/'
       target_branch:
-        description: 'Target branch (usually dev)'
+        description: 'Target branch'
         required: true
         type: string
         default: 'dev'
@@ -39,9 +39,9 @@ jobs:
         echo "Source branch: ${{ github.event.inputs.feature_branch }}"
         echo "Target branch: ${{ github.event.inputs.target_branch }}"
         
-        # Validate that source branch exists
-        git fetch origin ${{ github.event.inputs.feature_branch }}
-        git fetch origin ${{ github.event.inputs.target_branch }}
+        # Validate that branches exist
+        git fetch origin ${{ github.event.inputs.feature_branch }}:${{ github.event.inputs.feature_branch }}
+        git fetch origin ${{ github.event.inputs.target_branch }}:${{ github.event.inputs.target_branch }}
 
     - name: Generate diff report
       id: diff
@@ -73,7 +73,7 @@ jobs:
             const existingPRs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              head: `${context.repo.owner}:${featureBranch}`,
+              head: featureBranch,
               base: targetBranch,
               state: 'open'
             });
