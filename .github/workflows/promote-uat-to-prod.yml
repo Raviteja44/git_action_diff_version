@@ -25,13 +25,12 @@ jobs:
     - name: Fetch all branches
       run: |
         git fetch origin
-        git branch -a
-        echo "Available branches:"
+        echo "Available remote branches:"
         git branch -r
 
     - name: Generate diff report against prod
       run: |
-        # Create diff report between prod and uat
+        # Create diff report between prod and current uat branch
         git diff origin/prod...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null > diff_report.patch || echo "No differences found" > diff_report.patch
         echo "DIFF REPORT: UAT → Production" > diff_summary.md
         echo "=============================" >> diff_summary.md

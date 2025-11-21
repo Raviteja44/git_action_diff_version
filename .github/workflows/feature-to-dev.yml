@@ -27,26 +27,41 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        ref: ${{ github.event.inputs.feature_branch }}
 
     - name: Setup Git
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-    - name: Validate branches
+    - name: Validate and fetch branches
       run: |
         echo "Source branch: ${{ github.event.inputs.feature_branch }}"
         echo "Target branch: ${{ github.event.inputs.target_branch }}"
         
-        # Validate that branches exist
-        git fetch origin ${{ github.event.inputs.feature_branch }}:${{ github.event.inputs.feature_branch }}
-        git fetch origin ${{ github.event.inputs.target_branch }}:${{ github.event.inputs.target_branch }}
+        # Fetch all remote branches
+        git fetch origin
+        
+        # Verify branches exist
+        if ! git show-ref --verify --quiet refs/remotes/origin/${{ github.event.inputs.feature_branch }}; then
+          echo "Error: Feature branch ${{ github.event.inputs.feature_branch }} does not exist"
+          exit 1
+        fi
+        
+        if ! git show-ref --verify --quiet refs/remotes/origin/${{ github.event.inputs.target_branch }}; then
+          echo "Error: Target branch ${{ github.event.inputs.target_branch }} does not exist"
+          exit 1
+        fi
+        
+        echo "Both branches exist and are accessible"
+
+    - name: Checkout feature branch
+      run: |
+        git checkout ${{ github.event.inputs.feature_branch }}
 
     - name: Generate diff report
       id: diff
       run: |
-        # Create diff report
+        # Create diff report between target branch and current feature branch
         git diff origin/${{ github.event.inputs.target_branch }}...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null > diff_report.patch || echo "No differences found" > diff_report.patch
         echo "DIFF REPORT: ${{ github.event.inputs.feature_branch }} → ${{ github.event.inputs.target_branch }}" > diff_summary.md
         echo "==============================================" >> diff_summary.md
