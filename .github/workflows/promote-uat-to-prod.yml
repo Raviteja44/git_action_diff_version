@@ -1,0 +1,96 @@
+name: UAT to Production Deployment
+
+on:
+  workflow_dispatch: # Manual trigger only
+
+jobs:
+  promote-to-prod:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        ref: uat
+
+    - name: Setup Git
+      run: |
+        git config --global user.name 'github-actions[bot]'
+        git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+
+    - name: Generate diff report
+      run: |
+        git fetch origin main
+        # Create diff report
+        git diff origin/main...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null > diff_report.patch || echo "No differences found" > diff_report.patch
+        echo "DIFF REPORT: UAT → Production" > diff_summary.md
+        echo "=============================" >> diff_summary.md
+        git diff --stat origin/main...HEAD 2>/dev/null >> diff_summary.md || echo "No statistical differences" >> diff_summary.md
+
+        # Get commit history for release notes
+        git log origin/main..HEAD --oneline --no-merges 2>/dev/null > release_notes.md || echo "No new commits" > release_notes.md
+
+    - name: Create Pull Request to Production
+      id: create-pr
+      uses: actions/github-script@v6
+      with:
+        script: |
+          try {
+            // Read release notes
+            const fs = require('fs');
+            let releaseNotes = 'No release notes available';
+            if (fs.existsSync('release_notes.md')) {
+              releaseNotes = fs.readFileSync('release_notes.md', 'utf8');
+            }
+            
+            // Check if PR already exists
+            const existingPRs = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: 'uat',
+              base: 'main',
+              state: 'open'
+            });
+            
+            if (existingPRs.data.length > 0) {
+              console.log('PR already exists: ', existingPRs.data[0].html_url);
+              core.setOutput('pr_url', existingPRs.data[0].html_url);
+              return { pr_number: existingPRs.data[0].number, exists: true };
+            }
+            
+            // Create new PR
+            const pr = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚀 Production Release - ${new Date().toISOString().split('T')[0]}`,
+              head: 'uat',
+              base: 'main',
+              body: `## Production Deployment from uat\n\n` +
+                    `### 📋 Release Notes\n\`\`\`\n${releaseNotes}\n\`\`\`\n\n` +
+                    `**⚠️ Production Deployment - Requires Approval**`,
+              draft: false
+            });
+            
+            console.log('PR created: ', pr.data.html_url);
+            core.setOutput('pr_url', pr.data.html_url);
+            core.setOutput('pr_number', pr.data.number);
+            return { pr_number: pr.data.number, exists: false };
+          } catch (error) {
+            core.setFailed(`Error creating PR: ${error.message}`);
+            return { pr_number: 0, exists: false, error: error.message };
+          }
+
+    - name: Upload deployment artifacts
+      if: steps.create-pr.outputs.pr_number != 0
+      uses: actions/upload-artifact@v4
+      with:
+        name: prod-deployment-${{ github.sha }}
+        path: |
+          diff_report.patch
+          diff_summary.md
+          release_notes.md
+        retention-days: 90
