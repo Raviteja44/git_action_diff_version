@@ -1,122 +1,90 @@
-name: Promote Dev to UAT
+name: Development to UAT Deployment
 
 on:
-  workflow_dispatch:
-    inputs:
-      source_branch:
-        description: 'Source branch (usually dev)'
-        required: true
-        type: string
-        default: 'dev'
-      target_branch:
-        description: 'Target UAT branch'
-        required: true
-        type: string
-        default: 'uat'
+  workflow_dispatch: # Manual trigger only
 
 jobs:
-  promote-dev-to-uat:
+  promote-to-uat:
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
     
     steps:
-    - name: Checkout source branch
+    - name: Checkout repository
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        ref: ${{ github.event.inputs.source_branch }}
+        ref: uat
 
     - name: Setup Git
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-    - name: Generate UAT deployment report
-      id: deployment-report
+    - name: Fetch all branches
       run: |
         git fetch origin
-        git fetch origin ${{ github.event.inputs.target_branch }}
-        
-        # Get deployment metrics
-        COMMIT_COUNT=$(git log --oneline origin/${{ github.event.inputs.target_branch }}..HEAD | wc -l || echo "0")
-        CHANGED_FILES=$(git diff --name-only origin/${{ github.event.inputs.target_branch }}...HEAD --diff-filter=ACMRT | tr '\n' ',' | sed 's/,$//' || echo "")
-        
-        echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
-        echo "changed_files=$CHANGED_FILES" >> $GITHUB_OUTPUT
-        
-        # Create UAT release notes
-        echo "# UAT Deployment: ${{ github.event.inputs.source_branch }} → ${{ github.event.inputs.target_branch }}" > uat_release_notes.md
-        echo "## Deployment Summary" >> uat_release_notes.md
-        echo "- **Total Commits**: $COMMIT_COUNT" >> uat_release_notes.md
-        echo "- **Environment**: User Acceptance Testing" >> uat_release_notes.md
-        echo "- **Source**: ${{ github.event.inputs.source_branch }}" >> uat_release_notes.md
-        echo "" >> uat_release_notes.md
-        
-        echo "## Commit History" >> uat_release_notes.md
-        git log --pretty=format:"- **%h** %s (%an)" --reverse origin/${{ github.event.inputs.target_branch }}..HEAD >> uat_release_notes.md
+        echo "Available remote branches:"
+        git branch -r
 
-    - name: Create UAT deployment PR
+    - name: Generate diff report against dev
+      run: |
+        # Create diff report between dev and current uat branch
+        git diff origin/dev...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null > diff_report.patch || echo "No differences found" > diff_report.patch
+        echo "DIFF REPORT: Dev → UAT" > diff_summary.md
+        echo "======================" >> diff_summary.md
+        git diff --stat origin/dev...HEAD 2>/dev/null >> diff_summary.md || echo "No statistical differences" >> diff_summary.md
+
+    - name: Create Pull Request to UAT
       id: create-pr
       uses: actions/github-script@v6
       with:
         script: |
-          const sourceBranch = '${{ github.event.inputs.source_branch }}';
-          const targetBranch = '${{ github.event.inputs.target_branch }}';
-          const commitCount = '${{ steps.deployment-report.outputs.commit_count }}';
-          const changedFilesCount = '${{ steps.deployment-report.outputs.changed_files }}'.split(',').filter(f => f).length;
-          
           try {
+            // Check if PR already exists from dev to uat
             const existingPRs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              head: sourceBranch,
-              base: targetBranch,
+              head: 'dev',
+              base: 'uat',
               state: 'open'
             });
             
             if (existingPRs.data.length > 0) {
-              console.log(' PR already exists: ', existingPRs.data[0].html_url);
+              console.log('PR already exists: ', existingPRs.data[0].html_url);
               core.setOutput('pr_url', existingPRs.data[0].html_url);
               return { pr_number: existingPRs.data[0].number, exists: true };
             }
             
-            const prBody = `## UAT Deployment: ${sourceBranch} → ${targetBranch}
-            
-### Deployment Overview
-- **Commits being promoted**: ${commitCount}
-- **Files changed**: ${changedFilesCount}
-- **Target Environment**: User Acceptance Testing
-
-### Pre-Deployment Checklist
-- [ ] Development testing completed
-- [ ] Code review approved
-
-
-### Important Notes
-- This deployment is for UAT environment only
-- Requires approval from designated reviewers
-
-
----
-*Auto-generated UAT Deployment PR*`;
-
+            // Create new PR from dev to uat
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `UAT Deployment - ${new Date().toISOString().split('T')[0]}`,
-              head: sourceBranch,
-              base: targetBranch,
-              body: prBody,
+              title: `Deploy dev to uat - ${new Date().toISOString().split('T')[0]}`,
+              head: 'dev',
+              base: 'uat',
+              body: `## Deployment from dev to uat\n\n` +
+                    `This PR requires approval from CODEOWNERS.\n\n` +
+                    `**Auto-generated by GitHub Actions**`,
               draft: false
             });
             
-            console.log('UAT PR created: ', pr.data.html_url);
+            console.log('PR created: ', pr.data.html_url);
             core.setOutput('pr_url', pr.data.html_url);
             core.setOutput('pr_number', pr.data.number);
             return { pr_number: pr.data.number, exists: false };
           } catch (error) {
-            core.setFailed(` Error creating UAT PR: ${error.message}`);
+            core.setFailed(`Error creating PR: ${error.message}`);
             return { pr_number: 0, exists: false, error: error.message };
           }
+
+    - name: Upload diff report
+      if: steps.create-pr.outputs.pr_number != 0
+      uses: actions/upload-artifact@v4
+      with:
+        name: uat-diff-report-${{ github.sha }}
+        path: |
+          diff_report.patch
+          diff_summary.md
+        retention-days: 30
