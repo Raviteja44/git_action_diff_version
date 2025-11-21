@@ -1,10 +1,21 @@
-name: UAT to Production Deployment
+name: Promote UAT to Prod
 
 on:
-  workflow_dispatch: # Manual trigger only
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: 'Source branch (usually uat)'
+        required: true
+        type: string
+        default: 'uat'
+      target_branch:
+        description: 'Target production branch'
+        required: true
+        type: string
+        default: 'prod'
 
 jobs:
-  promote-to-prod:
+  promote-uat-to-prod:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -15,87 +26,109 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-        ref: uat
+        ref: ${{ github.event.inputs.source_branch }}
 
     - name: Setup Git
       run: |
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-    - name: Fetch all branches
+    - name: Generate production release notes
+      id: release-notes
       run: |
         git fetch origin
-        echo "Available remote branches:"
-        git branch -r
+        git fetch origin ${{ github.event.inputs.target_branch }}
+        
+        # Get production deployment metrics
+        COMMIT_COUNT=$(git log --oneline origin/${{ github.event.inputs.target_branch }}..HEAD | wc -l || echo "0")
+        FEATURES=$(git log --pretty=format:"%s" origin/${{ github.event.inputs.target_branch }}..HEAD | grep -i "feat:" || echo "No feature tags found")
+        FIXES=$(git log --pretty=format:"%s" origin/${{ github.event.inputs.target_branch }}..HEAD | grep -i "fix:" || echo "No fix tags found")
+        
+        echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+        echo "features=$FEATURES" >> $GITHUB_OUTPUT
+        echo "fixes=$FIXES" >> $GITHUB_OUTPUT
+        
+        # Create professional release notes
+        echo "# Production Release $(date +%Y-%m-%d)" > production_release_notes.md
+        echo "## Release Summary" >> production_release_notes.md
+        echo "- **Version**: $(date +%Y.%m.%d)" >> production_release_notes.md
+        echo "- **Commits**: $COMMIT_COUNT" >> production_release_notes.md
+        echo "- **Source**: ${{ github.event.inputs.source_branch }}" >> production_release_notes.md
+        echo "- **Target**: Production" >> production_release_notes.md
+        echo "" >> production_release_notes.md
+        
+        echo "## Changes" >> production_release_notes.md
+        git log --pretty=format:"- **%h** %s (%an)" --reverse origin/${{ github.event.inputs.target_branch }}..HEAD >> production_release_notes.md
 
-    - name: Generate diff report against prod
-      run: |
-        # Create diff report between prod and current uat branch
-        git diff origin/prod...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null > diff_report.patch || echo "No differences found" > diff_report.patch
-        echo "DIFF REPORT: UAT → Production" > diff_summary.md
-        echo "=============================" >> diff_summary.md
-        git diff --stat origin/prod...HEAD 2>/dev/null >> diff_summary.md || echo "No statistical differences" >> diff_summary.md
-
-        # Get commit history for release notes
-        git log origin/prod..HEAD --oneline --no-merges 2>/dev/null > release_notes.md || echo "No new commits" > release_notes.md
-
-    - name: Create Pull Request to Production
+    - name: Create production deployment PR
       id: create-pr
       uses: actions/github-script@v6
       with:
         script: |
+          const sourceBranch = '${{ github.event.inputs.source_branch }}';
+          const targetBranch = '${{ github.event.inputs.target_branch }}';
+          const commitCount = '${{ steps.release-notes.outputs.commit_count }}';
+          
           try {
-            // Check if PR already exists from uat to prod
             const existingPRs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              head: 'uat',
-              base: 'prod',
+              head: sourceBranch,
+              base: targetBranch,
               state: 'open'
             });
             
             if (existingPRs.data.length > 0) {
-              console.log('PR already exists: ', existingPRs.data[0].html_url);
+              console.log('📝 PR already exists: ', existingPRs.data[0].html_url);
               core.setOutput('pr_url', existingPRs.data[0].html_url);
               return { pr_number: existingPRs.data[0].number, exists: true };
             }
             
-            // Read release notes
-            const fs = require('fs');
-            let releaseNotes = 'No release notes available';
-            if (fs.existsSync('release_notes.md')) {
-              releaseNotes = fs.readFileSync('release_notes.md', 'utf8');
-            }
+            const prBody = `## PRODUCTION DEPLOYMENT
             
-            // Create new PR from uat to prod
+### Release Summary
+- **Total Changes**: ${commitCount} commits
+- **Source Environment**: UAT
+- **Target Environment**: **PRODUCTION**
+- **Deployment Date**: ${new Date().toISOString().split('T')[0]}
+
+### Pre-Production Checklist
+- [ ] DEV testing completed successfully
+- [ ] UAT testing completed successfully
+
+
+### Production Requirements
+- **Approval**: Requires production deployment approval
+
+### Deployment Notes
+- This is a production deployment
+
+---
+*Auto-generated Production Deployment PR*`;
+
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `🚀 Production Release - ${new Date().toISOString().split('T')[0]}`,
-              head: 'uat',
-              base: 'prod',
-              body: `## Production Deployment from UAT\n\n` +
-                    `### 📋 Release Notes\n\`\`\`\n${releaseNotes}\n\`\`\`\n\n` +
-                    `**⚠️ Production Deployment - Requires Approval**`,
+              title: `Production Release - ${new Date().toISOString().split('T')[0]}`,
+              head: sourceBranch,
+              base: targetBranch,
+              body: prBody,
               draft: false
             });
             
-            console.log('PR created: ', pr.data.html_url);
+            console.log('Production PR created: ', pr.data.html_url);
             core.setOutput('pr_url', pr.data.html_url);
             core.setOutput('pr_number', pr.data.number);
             return { pr_number: pr.data.number, exists: false };
           } catch (error) {
-            core.setFailed(`Error creating PR: ${error.message}`);
+            core.setFailed(`Error creating production PR: ${error.message}`);
             return { pr_number: 0, exists: false, error: error.message };
           }
 
-    - name: Upload deployment artifacts
+    - name: Upload release documentation
       if: steps.create-pr.outputs.pr_number != 0
       uses: actions/upload-artifact@v4
       with:
-        name: prod-deployment-${{ github.sha }}
-        path: |
-          diff_report.patch
-          diff_summary.md
-          release_notes.md
+        name: production-release-${{ github.sha }}
+        path: production_release_notes.md
         retention-days: 90

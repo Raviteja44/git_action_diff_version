@@ -1,21 +1,21 @@
-name: Feature to Development Deployment
+name: Promote Feature to Dev
 
 on:
   workflow_dispatch:
     inputs:
       feature_branch:
-        description: 'Feature branch to deploy'
+        description: 'Feature branch name to promote'
         required: true
         type: string
         default: 'feature/'
       target_branch:
-        description: 'Target branch'
+        description: 'Target development branch'
         required: true
         type: string
         default: 'dev'
 
 jobs:
-  compare-and-deploy:
+  promote-feature-to-dev:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -33,58 +33,78 @@ jobs:
         git config --global user.name 'github-actions[bot]'
         git config --global user.email 'github-actions[bot]@users.noreply.github.com'
 
-    - name: Validate and fetch branches
+    - name: Validate and setup branches
       run: |
-        echo "Source branch: ${{ github.event.inputs.feature_branch }}"
-        echo "Target branch: ${{ github.event.inputs.target_branch }}"
+        echo "Validating branches..."
+        echo "Source: ${{ github.event.inputs.feature_branch }}"
+        echo "Target: ${{ github.event.inputs.target_branch }}"
         
-        # Fetch all remote branches
         git fetch origin
         
         # Verify branches exist
         if ! git show-ref --verify --quiet refs/remotes/origin/${{ github.event.inputs.feature_branch }}; then
-          echo "Error: Feature branch ${{ github.event.inputs.feature_branch }} does not exist"
+          echo "Error: Feature branch '${{ github.event.inputs.feature_branch }}' not found"
           exit 1
         fi
         
         if ! git show-ref --verify --quiet refs/remotes/origin/${{ github.event.inputs.target_branch }}; then
-          echo "Error: Target branch ${{ github.event.inputs.target_branch }} does not exist"
+          echo "Error: Target branch '${{ github.event.inputs.target_branch }}' not found"
           exit 1
         fi
         
-        echo "Both branches exist and are accessible"
-
-    - name: Checkout feature branch
-      run: |
         git checkout ${{ github.event.inputs.feature_branch }}
+        echo "Branches validated successfully"
 
-    - name: Generate diff report
+    - name: Generate comprehensive diff report
       id: diff
       run: |
-        # Create diff report between target branch and current feature branch
-        git diff origin/${{ github.event.inputs.target_branch }}...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null > diff_report.patch || echo "No differences found" > diff_report.patch
-        echo "DIFF REPORT: ${{ github.event.inputs.feature_branch }} → ${{ github.event.inputs.target_branch }}" > diff_summary.md
-        echo "==============================================" >> diff_summary.md
-        git diff --stat origin/${{ github.event.inputs.target_branch }}...HEAD 2>/dev/null >> diff_summary.md || echo "No statistical differences" >> diff_summary.md
-        echo "" >> diff_summary.md
-        echo "Detailed changes:" >> diff_summary.md
-        git diff origin/${{ github.event.inputs.target_branch }}...HEAD -- . ':!*.md' ':!*.txt' 2>/dev/null >> diff_summary.md || echo "No detailed differences found" >> diff_summary.md
-
-        # Get changed files for PR description
-        CHANGED_FILES=$(git diff --name-only origin/${{ github.event.inputs.target_branch }}...HEAD --diff-filter=ACMRT 2>/dev/null | tr '\n' ' ' || echo "")
+        echo "Generating change analysis..."
+        
+        # Get basic diff stats
+        ADDED=$(git diff --numstat origin/${{ github.event.inputs.target_branch }}...HEAD | awk '{sum += $1} END {print sum}' || echo "0")
+        DELETED=$(git diff --numstat origin/${{ github.event.inputs.target_branch }}...HEAD | awk '{sum += $2} END {print sum}' || echo "0")
+        CHANGED_FILES=$(git diff --name-only origin/${{ github.event.inputs.target_branch }}...HEAD --diff-filter=ACMRT | tr '\n' ',' | sed 's/,$//' || echo "")
+        COMMIT_COUNT=$(git log --oneline origin/${{ github.event.inputs.target_branch }}..HEAD | wc -l || echo "0")
+        
+        echo "added_lines=$ADDED" >> $GITHUB_OUTPUT
+        echo "deleted_lines=$DELETED" >> $GITHUB_OUTPUT
         echo "changed_files=$CHANGED_FILES" >> $GITHUB_OUTPUT
+        echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+        
+        # Create detailed diff report
+        echo "# Change Analysis: ${{ github.event.inputs.feature_branch }} → ${{ github.event.inputs.target_branch }}" > diff_detailed.md
+        echo "## Summary" >> diff_detailed.md
+        echo "- **Commits**: $COMMIT_COUNT" >> diff_detailed.md
+        echo "- **Files Changed**: $(echo $CHANGED_FILES | tr ',' '\n' | wc -l)" >> diff_detailed.md
+        echo "- **Lines Added**: $ADDED" >> diff_detailed.md
+        echo "- **Lines Deleted**: $DELETED" >> diff_detailed.md
+        echo "" >> diff_detailed.md
+        
+        echo "## Changed Files" >> diff_detailed.md
+        git diff --name-only origin/${{ github.event.inputs.target_branch }}...HEAD | sed 's/^/- /' >> diff_detailed.md
+        echo "" >> diff_detailed.md
+        
+        echo "## Commit History" >> diff_detailed.md
+        git log --pretty=format:"- %h %s (%an)" origin/${{ github.event.inputs.target_branch }}..HEAD >> diff_detailed.md
+        echo "" >> diff_detailed.md
+        
+        echo "## File Changes" >> diff_detailed.md
+        git diff --stat origin/${{ github.event.inputs.target_branch }}...HEAD >> diff_detailed.md
 
-    - name: Create Pull Request
+    - name: Create deployment pull request
       id: create-pr
       uses: actions/github-script@v6
       with:
         script: |
           const featureBranch = '${{ github.event.inputs.feature_branch }}';
           const targetBranch = '${{ github.event.inputs.target_branch }}';
-          const changedFiles = '${{ steps.diff.outputs.changed_files }}';
+          const changedFiles = '${{ steps.diff.outputs.changed_files }}'.split(',').filter(f => f).join('\n- ');
+          const addedLines = '${{ steps.diff.outputs.added_lines }}';
+          const deletedLines = '${{ steps.diff.outputs.deleted_lines }}';
+          const commitCount = '${{ steps.diff.outputs.commit_count }}';
           
           try {
-            // Check if PR already exists
+            // Check for existing PR
             const existingPRs = await github.rest.pulls.list({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -100,18 +120,32 @@ jobs:
               return { pr_number: existingPRs.data[0].number, exists: true };
             }
             
-            // Create new PR
+            // Create comprehensive PR description
+            const prBody = `## Deployment from ${featureBranch} to ${targetBranch}
+            
+### Change Summary
+- **Commits to deploy**: ${commitCount}
+- **Files changed**: ${changedFiles.split('\\n- ').length}
+- **Lines added**: ${addedLines}
+- **Lines deleted**: ${deletedLines}
+
+### 📋 Changed Files
+- ${changedFiles}
+
+### 📝 Notes
+- This PR was auto-generated for deployment
+- Download detailed diff report from workflow artifacts
+
+---
+*Auto-generated by GitHub Actions Deployment Workflow*`;
+            
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: `Deploy ${featureBranch} to ${targetBranch}`,
               head: featureBranch,
               base: targetBranch,
-              body: `## Deployment from ${featureBranch} to ${targetBranch}\n\n` +
-                    `### Changed Files:\n${changedFiles}\n\n` +
-                    `### Diff Summary:\n` +
-                    'See attached diff report for detailed changes.\n\n' +
-                    `**Auto-generated by GitHub Actions**`,
+              body: prBody,
               draft: false
             });
             
@@ -124,19 +158,10 @@ jobs:
             return { pr_number: 0, exists: false, error: error.message };
           }
 
-    - name: Upload diff report
+    - name: Upload detailed diff report
       if: steps.create-pr.outputs.pr_number != 0
       uses: actions/upload-artifact@v4
       with:
-        name: diff-report-${{ github.sha }}
-        path: |
-          diff_report.patch
-          diff_summary.md
+        name: deployment-diff-${{ github.event.inputs.feature_branch }}-${{ github.sha }}
+        path: diff_detailed.md
         retention-days: 30
-
-    - name: Output PR details
-      if: steps.create-pr.outputs.pr_number != 0
-      run: |
-        echo "Pull Request created successfully!"
-        echo "PR URL: ${{ steps.create-pr.outputs.pr_url }}"
-        echo "PR Number: ${{ steps.create-pr.outputs.pr_number }}"
