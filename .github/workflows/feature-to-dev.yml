@@ -89,7 +89,7 @@ jobs:
             const pr = await github.rest.pulls.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Deploy ${featureBranch} to ${targetBranch}`- ${new Date().toISOString().split('T')[0]}`,
+              title: `Deploy ${featureBranch} to ${targetBranch} - ${formattedDate}`,
               head: featureBranch,
               base: targetBranch,
               body: `## Deployment from ${featureBranch} to ${targetBranch}\n\n` +
